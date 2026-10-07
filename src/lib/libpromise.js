@@ -247,6 +247,78 @@ addToLibrary({
     return id;
   },
 
+  // An fd for the outcome of a Promise (the `__proxy: 'fd'` form of an
+  // __async: 'auto' function, see jsifier): readable (POLLIN) once settled, with
+  // POLLERR too if rejected. read() yields the fulfilled value as one
+  // pointer-sized integer, or fails with EIO if rejected. The read takes
+  // ownership: later reads see EOF (POLLHUP). A synchronous (non-Promise)
+  // value is readable on return. The result lives on the open file
+  // description, so dup'd fds share it; nothing is held after the last
+  // close. A pending result holds the runtime alive like a timer.
+#if WASMFS
+  $fdFromPromise: (result) => {
+    abort('fd result forms are not supported with WASMFS');
+  },
+#else
+  $fdFromPromise__deps: ['$FS', '$fdResultSettle', '$fdResultRelease'],
+  $fdFromPromise: (result) => {
+    var stream = FS.createStream({
+      node: new FS.FSNode(0, '', 0, 0),
+      flags: {{{ cDefs.O_RDONLY }}},
+      stream_ops: {
+        poll: (stream) => {
+          var r = stream.shared.result;
+          if (!r) return 0;
+          if (r.consumed) return {{{ cDefs.POLLHUP }}};
+          return {{{ cDefs.POLLIN | cDefs.POLLRDNORM }}} | (r.rejected ? {{{ cDefs.POLLERR }}} : 0);
+        },
+        read: (stream, buffer, offset, length) => {
+          var r = stream.shared.result;
+          if (!r) throw new FS.ErrnoError({{{ cDefs.EAGAIN }}});
+          if (r.consumed) return 0;
+          if (r.rejected) throw new FS.ErrnoError({{{ cDefs.EIO }}});
+          if (length < {{{ POINTER_SIZE }}}) throw new FS.ErrnoError({{{ cDefs.EINVAL }}});
+#if ASSERTIONS
+          assert(buffer.buffer === HEAP8.buffer, 'result fds are read into wasm memory');
+#endif
+          {{{ makeSetValue('offset', 0, 'r.value', '*') }}};
+          r.consumed = true;
+          return {{{ POINTER_SIZE }}};
+        },
+        dup: (stream) => stream.shared.refcount++,
+        close: (stream) => {
+          if (--stream.shared.refcount) return;
+          stream.shared.closed = true;
+          if (!stream.shared.result) fdResultRelease();
+        },
+      },
+    });
+    var shared = stream.shared;
+    shared.refcount = 1;
+    if (result instanceof Promise) {
+      {{{ runtimeKeepalivePush() }}}
+      result.then((value) => fdResultSettle(stream, {value}),
+                  () => fdResultSettle(stream, {rejected: true}));
+    } else {
+      shared.result = {value: result};
+    }
+    return stream.fd;
+  },
+  $fdResultRelease__internal: true,
+  $fdResultRelease: () => {
+    {{{ runtimeKeepalivePop() }}}
+  },
+  $fdResultSettle__internal: true,
+  $fdResultSettle__deps: ['$fdResultRelease'],
+  $fdResultSettle: (stream, result) => {
+    var shared = stream.shared;
+    if (shared.closed) return;
+    fdResultRelease();
+    shared.result = result;
+    stream.node.notifyListeners({{{ cDefs.POLLIN | cDefs.POLLRDNORM }}} | (result.rejected ? {{{ cDefs.POLLERR }}} : 0));
+  },
+#endif
+
 #if ASYNCIFY
   emscripten_promise_await__async: 'auto',
   emscripten_promise_await__deps: ['$getPromise', '$setPromiseResult'],

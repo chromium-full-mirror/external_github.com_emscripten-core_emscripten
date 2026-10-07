@@ -302,6 +302,9 @@ export const LibraryManager = {
    * `__proxy` is a separate function over the same body, returning the
    * result in the shape that mode gives:
    *
+   *   foo_fd: 'foo',
+   *   foo_fd__proxy: 'fd',            // an fd readable once settled; read() is
+   *                                   // the value (see $fdFromPromise)
    *   foo_promise: 'foo',
    *   foo_promise__proxy: 'promise',  // an em_promise_t on the calling thread
    *
@@ -346,7 +349,7 @@ export const LibraryManager = {
       define(base, this.library[base + '__proxy']);
       for (const name of aliases) {
         const proxy = this.library[name + '__proxy'];
-        const formSig = (proxy == 'promise' ? 'p' : sig[0]) + sig.slice(1);
+        const formSig = (proxy == 'fd' ? 'i' : proxy == 'promise' ? 'p' : sig[0]) + sig.slice(1);
         const aliasSig = this.library[name + '__sig'];
         assert(!aliasSig || aliasSig == formSig, `${name}__sig must be '${formSig}'`);
         define(name, proxy);

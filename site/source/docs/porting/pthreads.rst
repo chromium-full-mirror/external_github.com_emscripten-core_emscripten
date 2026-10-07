@@ -46,8 +46,8 @@ functions are proxied by looking for the ``__proxy:`` annotations in the JS
 libraries. For example, ``getaddrinfo__proxy: 'sync'`` marks the ``getaddrinfo``
 function for automatic proxying.
 
-Functions can be marked using a ``__proxy`` annotation of ``sync``, ``async``
-or ``promise``.  By far the most common (and useful) is ``sync`` which
+Functions can be marked using a ``__proxy`` annotation of ``sync``, ``async``,
+``promise`` or ``fd``.  By far the most common (and useful) is ``sync`` which
 means that the calling thread will be blocked until the main thread has
 performed the proxied function and the return value will be returned
 synchronously on the calling thread.  ``async`` proxied functions will return
@@ -56,8 +56,10 @@ execution on the main thread at some point in the future.  ``promise`` proxied
 functions also return immediately on the calling thread, with an
 ``em_promise_t`` of the main thread's result (which may itself be a
 ``Promise``), settled once the calling thread next runs its proxying queue.
-This requires ``__async: 'auto'``; see
-:ref:`interacting-with-code-result-forms`.
+``fd`` proxied functions return a file descriptor, created on the main thread,
+that becomes readable with the result. The latter two require ``__async:
+'auto'``; see :ref:`interacting-with-code-result-forms` for the forms a function's result
+can take.
 
 This automatic proxying mechanism is built on the :ref:`proxying-h` API which
 can also be used directly for more precise control over how work is run on

@@ -1,6 +1,6 @@
 // A library function with result forms: `answer(ms, value)` resolves to
 // `value` after `ms` milliseconds (synchronously if `ms` is 0, rejecting if
-// `value` is 0), as `answer()` and `answer_promise()`. Where
+// `value` is 0), as `answer()`, `answer_fd()` and `answer_promise()`. Where
 // the caller cannot wait, `answer()` is -1.
 addToLibrary({
   answer__sig: 'pip',
@@ -12,6 +12,8 @@ addToLibrary({
     return new Promise((resolve, reject) =>
       setTimeout(() => value ? resolve(value) : reject(new Error('zero')), ms));
   },
+  answer_fd: 'answer',
+  answer_fd__proxy: 'fd',
   answer_promise: 'answer',
   answer_promise__proxy: 'promise',
 });

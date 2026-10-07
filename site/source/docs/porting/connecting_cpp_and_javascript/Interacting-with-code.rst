@@ -681,10 +681,17 @@ never otherwise, where the body must complete synchronously instead
 (returning an error, say).
 
 Its ``__proxy`` mode decides the shape in which the caller receives the
-result. Besides the blocking ``'sync'``, ``'promise'`` hands the result over
-without waiting, so ``canWait`` is always true for it: the caller gets an
-``em_promise_t`` on the calling thread (see ``<emscripten/promise.h>``)
-fulfilled with the value or rejected with ``NULL``.
+result. Besides the blocking ``'sync'``, two modes hand the result over
+without waiting, so ``canWait`` is always true for them:
+
+* ``'fd'``: a file descriptor that becomes readable (``poll()``,
+  ``select()``, ``epoll``) once the result is available, with ``POLLERR``
+  if the promise was rejected. ``read()`` of ``sizeof(intptr_t)`` bytes
+  takes the value (``EIO`` if rejected); the fd is then at EOF, and must be
+  ``close()``\d.
+* ``'promise'``: an ``em_promise_t`` on the calling thread (see
+  ``<emscripten/promise.h>``) fulfilled with the value or rejected with
+  ``NULL``.
 
 An alias of the function may declare its own ``__proxy``, exposing the same
 body in another form:
@@ -698,12 +705,15 @@ body in another form:
     if (!canWait) return -EAGAIN;
     return fetchSomething(name);  // returns a Promise
   },
+  lookup_fd: 'lookup',
+  lookup_fd__proxy: 'fd',
   lookup_promise: 'lookup',
   lookup_promise__proxy: 'promise',
 
 .. code-block:: c
 
   intptr_t lookup(const char* name);
+  int lookup_fd(const char* name);
   em_promise_t lookup_promise(const char* name);
 
 Only the forms a program uses are included.

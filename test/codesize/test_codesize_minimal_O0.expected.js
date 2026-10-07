@@ -959,6 +959,7 @@ Module['FS_createPreloadedFile'] = FS.createPreloadedFile;
   'addPromise',
   'idsToPromises',
   'makePromiseCallback',
+  'fdFromPromise',
   'Browser_asyncPrepareDataCounter',
   'isLeapYear',
   'ydayFromDate',

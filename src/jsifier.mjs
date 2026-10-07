@@ -285,10 +285,10 @@ function sigToArgs(sig) {
   return args.join(',');
 }
 
-// Whether a function hands over its 'auto' body's result as a promise rather
-// than returning it (see `__proxy`).
+// Whether a function hands over its 'auto' body's result as a promise or fd
+// rather than returning it (see `__proxy`).
 function isResultForm(symbol) {
-  return LibraryManager.library[symbol + '__proxy'] == 'promise';
+  return ['promise', 'fd'].includes(LibraryManager.library[symbol + '__proxy']);
 }
 
 function handleI64Signatures(symbol, snippet, sig, i53abi, isAsyncFunction) {
@@ -354,7 +354,8 @@ function handleI64Signatures(symbol, snippet, sig, i53abi, isAsyncFunction) {
       // An 'auto' body may return a Promise even without ASYNCIFY (on a
       // pthread's behalf, which awaits it), which must not be cast but
       // resolve to the cast value.
-      const maybePromise = !isAsyncFunction && LibraryManager.library[symbol + '__async'] == 'auto';
+      const maybePromise = !isAsyncFunction && LibraryManager.library[symbol + '__proxy'] != 'fd' &&
+        LibraryManager.library[symbol + '__async'] == 'auto';
       const convert = (v) => maybePromise ?
         `(${v} instanceof Promise ? ${v}.then((v) => ${makeReturn64('v')}) : ${makeReturn64(v)})` :
         makeReturn64(await_ + v);
@@ -537,8 +538,8 @@ function(${args}) {
       // An 'auto' body returns a value or a Promise, as it can. A body that
       // names one parameter more than __sig receives there `canWait`: whether
       // a returned Promise could be waited for on this call (always under
-      // ASYNCIFY/JSPI or when the caller receives a promise of the result;
-      // on behalf of a sync-proxied pthread caller, which awaits it;
+      // ASYNCIFY/JSPI or when the caller receives a promise or fd of the
+      // result; on behalf of a sync-proxied pthread caller, which awaits it;
       // never otherwise). When it is false the body must complete
       // synchronously instead.
       const canWait = ASYNCIFY || resultForm ? 'true' :
@@ -555,21 +556,32 @@ function(${outer}) {
       });
     }
 
+    // A promise-proxied function hands its Promise to the caller rather than
+    // suspending on it.
     if (resultForm) {
-      // The caller receives the result of an 'auto' body as a promise
-      // (addPromise of the body's value-or-Promise, on the calling thread)
-      // rather than waiting for it. A rejection becomes NULL: the body's own
-      // reason cannot reach C. The wrapping comes after proxying below, since
-      // the handle must be allocated on the calling thread.
+      // The caller receives the result of an 'auto' body in another shape
+      // rather than waiting for it: a promise (addPromise of the body's
+      // value-or-Promise, on the calling thread) or a pollable fd (see
+      // $fdFromPromise). A rejection becomes NULL / POLLERR: the body's own
+      // reason cannot reach C.
       if (LibraryManager.library[symbol + '__async'] != 'auto') {
         error(`JS library error: '${symbol}__proxy: '${proxyingMode}'' requires '${symbol}__async: 'auto'' (the body returns a value or a Promise)`);
       }
+      if (proxyingMode == 'fd') {
+        snippet = modifyJSFunction(snippet, (args, body, async_, oneliner) => {
+          if (!oneliner) body = `(${async_}() => {\n${body}\n})()`;
+          return `function(${args}) {\n  return fdFromPromise(${body});\n}\n`;
+        });
+        deps.push('$fdFromPromise');
+      }
+      // The promise form is wrapped after proxying below, since the handle
+      // must be allocated on the calling thread.
     } else if (isAsyncFunction == 'auto') {
       snippet = handleAsyncFunction(snippet, sig, proxyingMode == 'sync');
     }
 
     if (proxyingMode) {
-      if (!['sync', 'async', 'promise', 'none'].includes(proxyingMode)) {
+      if (!['sync', 'async', 'promise', 'fd', 'none'].includes(proxyingMode)) {
         error(`JS library error: invalid proxying mode '${symbol}__proxy: ${proxyingMode}' specified`);
       }
       if (SHARED_MEMORY && proxyingMode != 'none') {
@@ -590,6 +602,9 @@ function(${outer}) {
               // The body returns a value or a Promise; a pthread caller gets a
               // Promise of the main-thread result (see $proxyToMainThread).
               proxyMode = PROXY_PROMISE;
+            } else if (proxyingMode === 'fd') {
+              // The fd is created on the main thread, where descriptors live.
+              proxyMode = PROXY_SYNC;
             }
             const rtnType = sig?.[0];
             const proxyFunc =

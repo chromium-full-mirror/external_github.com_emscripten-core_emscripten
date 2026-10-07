@@ -39,6 +39,10 @@ export const nativeAliases = {};
 const srcDir = fileURLToPath(new URL('.', import.meta.url));
 const systemLibdir = path.join(srcDir, 'lib');
 
+function sigToArgs(sig) {
+  return Array.from({length: sig.length - 1}, (_, i) => `a${i + 1}`).join(', ');
+}
+
 function isBeneath(childPath, parentPath) {
   const relativePath = path.relative(parentPath, childPath);
   return !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
@@ -285,9 +289,70 @@ export const LibraryManager = {
     }
     timer.stop('executeJS')
 
+    this.expandResultForms();
     this.addAliasDependencies();
 
     timer.stop('load')
+  },
+
+  /**
+   * Result forms of an `__async: 'auto'` function. Such a function returns a
+   * pointer-sized value or a Promise of one, as its trailing `canWait`
+   * argument allows (see jsifier). An alias of it that declares its own
+   * `__proxy` is a separate function over the same body, returning the
+   * result in the shape that mode gives:
+   *
+   *   foo_promise: 'foo',
+   *   foo_promise__proxy: 'promise',  // an em_promise_t on the calling thread
+   *
+   * The body is lifted to an internal `$fooImpl` that each form calls; the
+   * jsifier gives each its own wrapping. Signatures derive from the base's.
+   */
+  expandResultForms() {
+    const forms = new Map();
+    for (const [key, value] of Object.entries(this.library)) {
+      if (isDecorator(key) || typeof value != 'string') continue;
+      if (this.library[value + '__async'] != 'auto') continue;
+      const proxy = this.library[key + '__proxy'];
+      if (!proxy || proxy == this.library[value + '__proxy']) continue;
+      if (!forms.has(value)) forms.set(value, []);
+      forms.get(value).push(key);
+    }
+
+    for (const [base, aliases] of forms) {
+      const impl = this.library[base];
+      const sig = this.library[base + '__sig'];
+      assert(typeof impl == 'function', `${base}: result forms need a function body`);
+      assert(sig, `${base}: result forms need ${base}__sig`);
+      assert(sig[0] == 'p' || sig[0] == 'i', `${base}: result forms need a pointer-sized result ('p' or 'i' return in __sig)`);
+      const args = sigToArgs(sig);
+      // Whether the body names the trailing canWait (see jsifier).
+      const takesCanWait = impl.length == sig.length;
+      const bodyArgs = takesCanWait ? `${args}${args ? ', ' : ''}canWait` : args;
+
+      // Internal unless the body came from a user library, whose forms would
+      // otherwise warn about depending on it.
+      const implName = `$${base}Impl`;
+      this.library[implName] = impl;
+      this.library[implName + '__deps'] = this.library[base + '__deps'] ?? [];
+      if (!this.library[base + '__user']) this.library[implName + '__internal'] = true;
+
+      const define = (name, proxy) => {
+        this.library[name] = runInMacroContext(`((${bodyArgs}) => ${base}Impl(${bodyArgs}))`, {filename: `<${name}>`});
+        this.library[name + '__deps'] = [implName];
+        this.library[name + '__async'] = 'auto';
+        this.library[name + '__proxy'] = proxy;
+      };
+      define(base, this.library[base + '__proxy']);
+      for (const name of aliases) {
+        const proxy = this.library[name + '__proxy'];
+        const formSig = (proxy == 'promise' ? 'p' : sig[0]) + sig.slice(1);
+        const aliasSig = this.library[name + '__sig'];
+        assert(!aliasSig || aliasSig == formSig, `${name}__sig must be '${formSig}'`);
+        define(name, proxy);
+        this.library[name + '__sig'] = formSig;
+      }
+    }
   },
 
   isAlias(entry) {

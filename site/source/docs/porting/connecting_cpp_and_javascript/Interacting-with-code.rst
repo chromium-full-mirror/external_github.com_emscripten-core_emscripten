@@ -667,6 +667,46 @@ Using ``-sWASM_BIGINT`` when linking is an alternative method of handling
 64-bit types in libraries.  ```Number()``` may be needed on the JavaScript
 side to convert it to a usable value.  See `settings reference <https://emscripten.org/docs/tools_reference/settings_reference.html?highlight=environment#wasm-bigint>`_.
 
+.. _interacting-with-code-result-forms:
+
+Asynchronous functions and their result forms
+---------------------------------------------
+
+A library function marked ``__async: 'auto'`` returns either a pointer-sized
+value or a ``Promise`` of one. It receives a trailing ``canWait`` argument
+saying whether a returned ``Promise`` could be waited for on this call:
+always under ``ASYNCIFY``/JSPI, when called from a pthread with ``__proxy:
+'sync'`` (the body runs on the main thread, and the caller waits for it), and
+never otherwise, where the body must complete synchronously instead
+(returning an error, say).
+
+Its ``__proxy`` mode decides the shape in which the caller receives the
+result. Besides the blocking ``'sync'``, ``'promise'`` hands the result over
+without waiting, so ``canWait`` is always true for it: the caller gets an
+``em_promise_t`` on the calling thread (see ``<emscripten/promise.h>``)
+fulfilled with the value or rejected with ``NULL``.
+
+An alias of the function may declare its own ``__proxy``, exposing the same
+body in another form:
+
+.. code-block:: javascript
+
+  lookup__sig: 'pp',
+  lookup__async: 'auto',
+  lookup__proxy: 'sync',
+  lookup: (name, canWait) => {
+    if (!canWait) return -EAGAIN;
+    return fetchSomething(name);  // returns a Promise
+  },
+  lookup_promise: 'lookup',
+  lookup_promise__proxy: 'promise',
+
+.. code-block:: c
+
+  intptr_t lookup(const char* name);
+  em_promise_t lookup_promise(const char* name);
+
+Only the forms a program uses are included.
 
 .. _interacting-with-code-access-memory:
 

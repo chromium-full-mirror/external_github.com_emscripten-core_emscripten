@@ -14738,6 +14738,17 @@ w:0,t:0x[0-9a-fA-F]+: formatted: 42
     # See https://github.com/llvm/llvm-project/commit/c800391fb974cdaaa62bd74435f76408c2e5ceae
     self.assert_fail([EMCC, '-pthreads', '-c', test_file('hello_world.c')], 'emcc: error: unrecognized command-line option `-pthreads`; did you mean `-pthread`?')
 
+  def test_jslib_proxy_promise_requires_async(self):
+    create_file('lib.js', '''
+      addToLibrary({
+        foo__sig: 'i',
+        foo__proxy: 'promise',
+        foo: () => 1,
+      });
+    ''')
+    create_file('main.c', 'int foo(void); int main() { return foo(); }')
+    self.assert_fail([EMCC, 'main.c', '--js-library=lib.js'], "'foo__proxy: 'promise'' requires 'foo__async: 'auto''")
+
   def test_missing_struct_info(self):
     create_file('lib.js', '''
       {{{ C_STRUCTS.Foo }}}

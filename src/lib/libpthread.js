@@ -992,7 +992,8 @@ var LibraryPThread = {
   $proxyToMainThreadPtr: (...args) => BigInt(proxyToMainThread(...args)),
 #endif
 
-  $proxyToMainThread__deps: ['$stackSave', '$stackRestore', '$stackAlloc', '_emscripten_run_js_on_main_thread'],
+
+  $proxyToMainThread__deps: ['$stackSave', '$stackRestore', '$stackAlloc', '_emscripten_run_js_on_main_thread', '$getPromise', 'emscripten_promise_destroy'],
   $proxyToMainThread__docs: '/** @type{function(number, (number|boolean), ...number)} */',
   $proxyToMainThread: (funcIndex, emAsmAddr, proxyMode, ...callArgs) => {
     // EM_ASM proxying is done by passing a pointer to the address of the EM_ASM
@@ -1036,6 +1037,13 @@ var LibraryPThread = {
     }
     var rtn = __emscripten_run_js_on_main_thread(funcIndex, emAsmAddr, bufSize, args, proxyMode);
     stackRestore(sp);
+    if (proxyMode == 3 /* PROXY_PROMISE */) {
+      // An em_promise_t of the main-thread result, settled once this thread
+      // runs its proxying queue; rejected with NULL.
+      var promise = getPromise(rtn);
+      _emscripten_promise_destroy(rtn);
+      return promise;
+    }
     return rtn;
   },
 
@@ -1085,19 +1093,22 @@ var LibraryPThread = {
     PThread.currentProxiedOperationCallerThread = callingThread;
     var rtn = func(...proxiedJSCallArgs);
     PThread.currentProxiedOperationCallerThread = 0;
-    if (ctx) {
-      // A PROXY_SYNC_ASYNC function may complete synchronously with a plain value.
-      Promise.resolve(rtn).then((rtn) => __emscripten_run_js_on_main_thread_done(ctx, ctxArgs, rtn));
-      return;
-    }
-
 #if MEMORY64
     // In memory64 mode some proxied functions return bigint/pointer but
     // our return type is i53/double.
-    if (typeof rtn == 'bigint') {
-      rtn = bigintToI53Checked(rtn);
-    }
+    var toI53 = (rtn) => typeof rtn == 'bigint' ? bigintToI53Checked(rtn) : rtn;
+#else
+    var toI53 = (rtn) => rtn;
 #endif
+    if (ctx) {
+      // A PROXY_SYNC_ASYNC / PROXY_PROMISE function may complete synchronously
+      // with a plain value.
+      Promise.resolve(rtn).then(
+        (rtn) => __emscripten_run_js_on_main_thread_done(ctx, ctxArgs, toI53(rtn), true),
+        () => __emscripten_run_js_on_main_thread_done(ctx, ctxArgs, 0, false));
+      return;
+    }
+    rtn = toI53(rtn);
 #if ASSERTIONS
     // Proxied functions can return any type except bigint.  All other types
     // coerce to f64/double (the return type of this function in C) but not

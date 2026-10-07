@@ -9801,6 +9801,20 @@ NODEFS is no longer included by default; build with -lnodefs.js
   def test_promise_await(self):
     self.do_core_test('test_promise_await.c')
 
+  @parameterized({
+    '': ([],),
+    'asyncify': (['-sASYNCIFY', '-DASYNC'],),
+    'jspi': (['-sJSPI', '-DASYNC'],),
+    'pthread': (['-pthread', '-sPROXY_TO_PTHREAD'],),
+  })
+  def test_result_forms(self, args):
+    if '-sJSPI' in args:
+      self.require_jspi()
+    if '-sASYNCIFY' in args and self.get_setting('WASM_ESM_INTEGRATION'):
+      self.skipTest('WASM_ESM_INTEGRATION is not compatible with ASYNCIFY')
+    self.do_runf('core/test_result_forms.c', 'done\n',
+                 cflags=args + ['-sEXIT_RUNTIME', '--js-library', test_file('core/test_result_forms.js')])
+
   def test_promise_await_error(self):
     # Check that the API is not available when ASYNCIFY is not set
     self.do_runf('core/test_promise_await.c', 'emscripten_promise_await is only available with ASYNCIFY',

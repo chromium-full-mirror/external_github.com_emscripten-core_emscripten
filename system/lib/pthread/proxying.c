@@ -212,6 +212,7 @@ struct em_proxying_ctx {
     struct {
       em_proxying_queue* queue;
       pthread_t caller_thread;
+      void* result;
       void (*callback)(void*);
       void (*cancel)(void*);
     } cb;
@@ -350,6 +351,13 @@ static void call_callback_then_free_ctx(void* arg) {
   free_ctx(ctx);
 }
 
+void emscripten_proxy_finish_with_result(em_proxying_ctx* ctx, void* result) {
+  if (ctx->kind == CALLBACK) {
+    ctx->cb.result = result;
+  }
+  emscripten_proxy_finish(ctx);
+}
+
 void emscripten_proxy_finish(em_proxying_ctx* ctx) {
   if (ctx->kind == SYNC) {
     pthread_mutex_lock(&ctx->sync.mutex);
@@ -377,6 +385,13 @@ static void call_cancel_then_free_ctx(void* arg) {
   em_proxying_ctx* ctx = arg;
   ctx->cb.cancel(ctx->arg);
   free_ctx(ctx);
+}
+
+static void cancel_ctx(void* arg);
+
+void emscripten_proxy_fail(em_proxying_ctx* ctx) {
+  remove_active_ctx(ctx);
+  cancel_ctx(ctx);
 }
 
 static void cancel_ctx(void* arg) {
@@ -527,16 +542,19 @@ typedef struct promise_ctx {
   void (*func)(em_proxying_ctx*, void*);
   void* arg;
   em_promise_t promise;
+  em_proxying_ctx* ctx;
 } promise_ctx;
 
 static void promise_call(em_proxying_ctx* ctx, void* arg) {
   promise_ctx* promise_ctx = arg;
+  promise_ctx->ctx = ctx;
   promise_ctx->func(ctx, promise_ctx->arg);
 }
 
 static void promise_fulfill(void* arg) {
   promise_ctx* promise_ctx = arg;
-  emscripten_promise_resolve(promise_ctx->promise, EM_PROMISE_FULFILL, NULL);
+  emscripten_promise_resolve(
+    promise_ctx->promise, EM_PROMISE_FULFILL, promise_ctx->ctx->cb.result);
   emscripten_promise_destroy(promise_ctx->promise);
 }
 
@@ -643,17 +661,23 @@ static void run_js_func_with_ctx(em_proxying_ctx* ctx, void* arg) {
   proxied_js_func_t* f = (proxied_js_func_t*)arg;
   _emscripten_receive_on_main_thread_js(
     f->funcIndex, f->emAsmAddr, f->callingThread, f->bufSize, f->argBuffer, ctx, arg);
-
-  // run_js_func_with_ctx is always synchronously proxied and therefore arg
-  // should never be owned on the main thread (i.e. the argument here always
-  // exists on the stack of the calling thread, it's never copied/malloced).
-  assert(!f->owned);
 }
 
-void _emscripten_run_js_on_main_thread_done(void* ctx, void* arg, double result) {
+// Completion of a function run with a context, once its result (a value or a
+// settled Promise) is known. A rejection fails the task: the calling thread's
+// promise (PROXY_PROMISE) is rejected; a PROXY_SYNC_ASYNC caller gets 0.
+void _emscripten_run_js_on_main_thread_done(void* ctx, void* arg, double result, bool fulfilled) {
   proxied_js_func_t* f = (proxied_js_func_t*)arg;
   f->result = result;
-  emscripten_proxy_finish(ctx);
+  if (f->owned) {
+    free(f->argBuffer);
+    free(f);
+  }
+  if (fulfilled) {
+    emscripten_proxy_finish_with_result(ctx, (void*)(intptr_t)result);
+  } else {
+    emscripten_proxy_fail(ctx);
+  }
 }
 
 /*
@@ -664,6 +688,9 @@ void _emscripten_run_js_on_main_thread_done(void* ctx, void* arg, double result)
  * - PROXY_SYNC: Synchronous on the calling thread, and also on the main thread
  * - PROXY_SYNC_ASYNC: Synchronous on the calling thread, but async on the main
  *   thread.
+ * - PROXY_PROMISE: Returns immediately on the calling thread with an
+ *   em_promise_t; async on the main thread, whose result settles it once the
+ *   calling thread runs its queue (emscripten_proxy_promise_with_ctx).
  *
  * Note: 'PROXY_SYNC_ASYNC' is only passed when a function is marked as
  * both "__async" and "__proxy: 'sync'"
@@ -671,6 +698,7 @@ void _emscripten_run_js_on_main_thread_done(void* ctx, void* arg, double result)
 #define PROXY_ASYNC 0
 #define PROXY_SYNC 1
 #define PROXY_SYNC_ASYNC 2
+#define PROXY_PROMISE 3
 
 double _emscripten_run_js_on_main_thread(int func_index,
                                          void* em_asm_addr,
@@ -688,6 +716,15 @@ double _emscripten_run_js_on_main_thread(int func_index,
 
   em_proxying_queue* q = emscripten_proxy_get_system_queue();
   pthread_t target = emscripten_main_runtime_thread_id();
+
+  if (proxyMode == PROXY_PROMISE) {
+    proxied_js_func_t* arg = malloc(sizeof(proxied_js_func_t));
+    *arg = f;
+    arg->owned = true;
+    arg->argBuffer = malloc(buf_size);
+    memcpy(arg->argBuffer, buffer, buf_size);
+    return (double)(intptr_t)emscripten_proxy_promise_with_ctx(q, target, run_js_func_with_ctx, arg);
+  }
 
   if (proxyMode != PROXY_ASYNC) {
     int rtn;
